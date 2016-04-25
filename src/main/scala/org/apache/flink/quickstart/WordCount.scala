@@ -104,9 +104,11 @@ object WordCount {
       // this is basically the same we did for word7Count but mapping words to pairs 
       // with 1 inside the closure instead of outside. An optimized implementation 
       // that avoids the intermediate map using a var for counting could also be easily 
-      // written here, again much flexibility! 
+      // written here, again much flexibility! This is even better because we have another
+      // overload that passes a Collector that can be used to emit more than one aggregation
+      // per group
       group
-        .map((_, 1))
+        .map{(_, 1)}
         // in fact this is a copy paste of the aggregation for word7Counts
         .reduce{ (kC1, kC2) => (kC1, kC2) match {
           case ((key1, count1), (key2, count2)) => 
