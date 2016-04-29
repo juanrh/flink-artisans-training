@@ -26,6 +26,12 @@ import scala.concurrent.duration._
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import org.apache.flink.api.common.operators.Order
+import org.apache.flink.api.common.functions.RichMapFunction
+import org.apache.flink.configuration.Configuration
+
+import org.slf4j.LoggerFactory
+import org.slf4j.Logger
 
 /**
  * Implements the "WordCount" program that computes a simple word occurrence histogram
@@ -42,6 +48,14 @@ object WordCount {
 
     // set up the execution environment
     val env = ExecutionEnvironment.getExecutionEnvironment
+    val executionConfig = env.getConfig
+      // https://ci.apache.org/projects/flink/flink-docs-master/apis/common/#execution-configuration
+    executionConfig.disableSysoutLogging()
+    
+    // Logging
+      // https://ci.apache.org/projects/flink/flink-docs-master/internals/logging.html
+    val logger = LoggerFactory.getLogger(WordCount.getClass)
+    logger.warn("Starting program")
     
     // Cannot use this because launching actions doesn't seem to be thread safe, 
     // see comment at the end of the file
@@ -118,9 +132,58 @@ object WordCount {
     // val word7CountsAltPrinted = Future { word7CountsAlt.print() }
     word7CountsAlt.print()
     
+    //env.fromCollection(1 to 1000).groupBy{x => x % 7}.reduceGroup{_.sum }.collect()
+    env.fromCollection(1 to 1000).groupBy{x => x % 7}.reduceGroup{xs => 
+      val first = xs.next()
+      (first % 7, 1 + xs.length)
+    }.collect()
+    
+    val tupleSum = env.fromCollection(1 to 1000).groupBy{ x => (x%3, x%4) }.reduceGroup{_.sum}.collect()
+    println(s"tupleSum: ${tupleSum.mkString(",")}")
+    
     // execute and print result
     //val wordCountsPrinted = Future { wordCounts.print() } 
     wordCounts.print() // this forces execution
+    
+    val xs = env.fromCollection(1 to 1000)
+    // NOTE we can reduceGroup on a non grouped dataset, using the whole dataset as a 
+    // single group. Similarly when reduce() is applied to a grouped dataset then each
+    // different group is reduced. So reduce() and groupReduce() are different formulations
+    // of the same
+    println(s"reduceGroup on non grouped: ${xs.reduceGroup(_.sum).collect.mkString(",")}")
+    println(s"reduceGroup on grouped: ${xs.groupBy{_%2}.reduceGroup(_.sum).collect.mkString(",")}")
+    println(s"reduce on non grouped: ${xs.reduce(_+_).collect.mkString(",")}")
+    println(s"reduce on grouped: ${xs.groupBy{_%2}.reduce(_+_).collect.mkString(",")}")
+    
+    println(s"max value in each modulo class: ${xs.groupBy{_ % 7}
+                                                  .sortGroup(identity[Int] _, Order.DESCENDING)
+                                                  .reduceGroup{cs => 
+                                                     val max = cs.next
+                                                     (max % 7, max)
+                                                   }.collect.mkString(",")}")
+
+    import scala.math.max
+    val xsPlus = xs.map( new RichMapFunction[Int, Int] {
+       def map(x: Int): Int = x+1
+       override def open(parameters: Configuration) {
+         logger.warn(s"starting f with parameters $parameters")
+         logger.warn("""this is a nice place for opening a database 
+           connection, or creating a Jackson mapper, to say something""")
+       }
+       
+       override def close() {
+         logger.warn(s"closing f")
+       }
+     })
+     
+    val maxXsPlus = xsPlus.reduce((x, y) => max(x, y)).collect()(0)
+    println(s"maxXsPlus: $maxXsPlus")
+    // note the equivalent of RDD.take is trivially implemented by 
+    // a reduceGroup(_.take(n).toSeq) followed by collect()(0): add to 
+    // extra methods with a implicit class?
+    val takeXsPlus = xsPlus.reduceGroup(_.take(4).toSeq).collect()(0)
+    println(s"takeXsPlus ${takeXsPlus.mkString(",")}")
+                                                   
     
     // await for all futures
 //    val pendingActions = List(wordCountsPrinted, word7CountsPrinted, word7CountsAltPrinted)
@@ -130,8 +193,9 @@ object WordCount {
 //    }
 //    Await.result(pendingActionsFinished, 10 seconds)
     
-    // writeAsCsv needs env.execute() to be launched TODO study which actions need this and
-    // which don't 
+    // In general all data sink methods are lazy and are only executed when env.execute() is 
+    // called. Non lazy data sink methods are documented as such in the scaladocs, but are
+    // basically those that return data to the client process, like collect, print and count
       // this creates a folder WordCounts at the root of the project
     wordCounts.writeAsCsv("WordCounts", Properties.lineSeparator, ",", WriteMode.OVERWRITE)
     env.execute("Counting words")
